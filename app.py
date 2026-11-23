@@ -67,31 +67,40 @@ category = st.sidebar.selectbox(
 severity = st.sidebar.slider("Severity Level (1-5)", 1, 5, auto_sev)
 
 # --- AUTO-FETCH LIVE GPS ---
-st.sidebar.markdown("### 📍 Live GPS Location")
-with st.sidebar:
-    gps = streamlit_geolocation()
+# --- LOCATION MODE (GPS WITH CELL TOWER FALLBACK) ---
+st.sidebar.markdown("### 📍 Location Source")
+location_mode = st.sidebar.radio(
+    "Select Mode:",
+    ["Live GPS / Manual", "📡 GPS Failed (Use Cell Tower Fallback)"]
+)
 
-if demo_choice == "Custom Input" and gps and gps.get("latitude") is not None and gps.get("longitude") is not None:
-    live_lat = float(gps["latitude"])
-    live_lon = float(gps["longitude"])
-    accuracy_m = round(float(gps.get("accuracy", 0)), 1)
-    st.sidebar.success(f"GPS Locked (±{accuracy_m} m)")
+lat, lon = None, None
+use_cell = False
+
+if location_mode == "Live GPS / Manual":
+    with st.sidebar:
+        gps = streamlit_geolocation()
+
+    if demo_choice == "Custom Input" and gps and gps.get("latitude") is not None and gps.get("longitude") is not None:
+        live_lat = float(gps["latitude"])
+        live_lon = float(gps["longitude"])
+        accuracy_m = round(float(gps.get("accuracy", 0)), 1)
+        st.sidebar.success(f"GPS Locked (±{accuracy_m} m)")
+    else:
+        live_lat, live_lon = default_lat, default_lon
+        if demo_choice == "Custom Input":
+            st.sidebar.info("Click the target icon above to auto-fetch GPS.")
+
+    lat = st.sidebar.number_input("Latitude", value=live_lat, format="%.6f")
+    lon = st.sidebar.number_input("Longitude", value=live_lon, format="%.6f")
 else:
-    live_lat, live_lon = default_lat, default_lon
-    if demo_choice == "Custom Input":
-        st.sidebar.info("Click the target icon above to auto-fetch your GPS.")
-
-lat = st.sidebar.number_input("Latitude", value=live_lat, format="%.6f")
-lon = st.sidebar.number_input("Longitude", value=live_lon, format="%.6f")
-
-# --- CELL TOWER VERIFICATION ---
-with st.sidebar.expander("📡 Cell Tower Verification (Optional)"):
-    use_cell = st.checkbox("Verify GPS with Cell Tower", value=False)
-    radio = st.selectbox("Network Type", ["lte", "gsm", "umts"])
-    mcc = st.number_input("MCC (India: 404 or 405)", value=404, step=1)
-    mnc = st.number_input("MNC (Operator Code)", value=49, step=1)
-    lac = st.number_input("LAC / TAC", value=31, step=1)
-    cid = st.number_input("Cell ID (CID)", value=1161, step=1)
+    use_cell = True
+    st.sidebar.warning("GPS unavailable — locating via nearest Cell Tower.")
+    radio = st.sidebar.selectbox("Network Type", ["lte", "gsm", "umts"])
+    mcc = st.sidebar.number_input("MCC (India: 404 or 405)", value=404, step=1)
+    mnc = st.sidebar.number_input("MNC (Operator Code)", value=49, step=1)
+    lac = st.sidebar.number_input("LAC / TAC", value=31, step=1)
+    cid = st.sidebar.number_input("Cell ID (CID)", value=1161, step=1)
 
 # --- LIVE RENDER BACKEND URL ---
 API_BASE = "https://rescue-odisha.onrender.com/api/v1"
