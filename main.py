@@ -1,13 +1,18 @@
+import math
+import os
 import ssl
 import uuid
 from typing import Optional
-from fastapi import FastAPI, Depends, status
+
+import requests
+from fastapi import FastAPI, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 
 # --- DATABASE SETUP (Aiven Cloud MySQL) ---
-DATABASE_URL = (
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
     "mysql+pymysql://avnadmin:AVNS_jjLgFjzUZjJ_o9W6jHh@"
     "mysql-ded093-mishradebashish07-9af6.f.aivencloud.com:13345/defaultdb"
 )
@@ -30,6 +35,71 @@ def get_db():
         yield db
     finally:
         db.close()
+
+# --- CELL TOWER VERIFICATION (Unwired Labs / OpenCelliD) ---
+UNWIRED_TOKEN = os.getenv("UNWIREDLABS_TOKEN")
+UNWIRED_URL = "https://us1.unwiredlabs.com/v2/process"
+
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(dlon / 2) ** 2
+    )
+    return 2 * R * math.asin(math.sqrt(a))
+
+def verify_cell_tower(
+    gps_lat: Optional[float],
+    gps_lon: Optional[float],
+    mcc: int,
+    mnc: int,
+    lac: int,
+    cid: int,
+    radio: str = "lte"
+) -> dict:
+    if not UNWIRED_TOKEN:
+        return {"verified": False, "reason": "UNWIREDLABS_TOKEN not set in Render Environment"}
+
+    req_payload = {
+        "token": UNWIRED_TOKEN,
+        "radio": radio,
+        "mcc": mcc,
+        "mnc": mnc,
+        "cells": [{"lac": lac, "cid": cid}],
+        "address": 1
+    }
+    try:
+        res = requests.post(UNWIRED_URL, json=req_payload, timeout=15)
+        data = res.json()
+    except Exception as e:
+        return {"verified": False, "reason": f"Cell API error: {e}"}
+
+    if data.get("status") != "ok":
+        return {"verified": False, "reason": data.get("message", "Cell tower not found")}
+
+    tower_lat = float(data["lat"])
+    tower_lon = float(data["lon"])
+    accuracy_m = data.get("accuracy", 5000)
+    max_radius_km = max(accuracy_m / 1000.0, 10.0)  # 10 km minimum tolerance
+
+    distance_km = None
+    verified = True
+    if gps_lat is not None and gps_lon is not None:
+        distance_km = round(haversine_km(gps_lat, gps_lon, tower_lat, tower_lon), 2)
+        verified = distance_km <= max_radius_km
+
+    return {
+        "verified": verified,
+        "tower_lat": tower_lat,
+        "tower_lon": tower_lon,
+        "distance_from_tower_km": distance_km,
+        "tower_accuracy_m": accuracy_m,
+        "approx_address": data.get("address")
+    }
 
 # --- AUTO-CREATE TABLES & SEED DATA ON STARTUP ---
 def init_db():
@@ -93,16 +163,23 @@ def init_db():
 class SOSRequest(BaseModel):
     reporter_contact: Optional[str] = Field(None, example="+919876543210")
     message: str = Field(..., example="Flooding near market, 4 people stranded on roof")
-    latitude: float = Field(..., ge=-90.0, le=90.0, example=21.4680)
-    longitude: float = Field(..., ge=-180.0, le=180.0, example=87.0130)
+    latitude: Optional[float] = Field(None, ge=-90.0, le=90.0, example=21.4680)
+    longitude: Optional[float] = Field(None, ge=-180.0, le=180.0, example=87.0130)
     category: str = Field("flood_rescue", example="flood_rescue")
     severity_score: int = Field(4, ge=1, le=5)
+    # Optional Cell Tower fields
+    mcc: Optional[int] = Field(None, example=404)
+    mnc: Optional[int] = Field(None, example=49)
+    lac: Optional[int] = Field(None, example=31)
+    cid: Optional[int] = Field(None, example=1161)
+    radio: str = Field("lte", example="lte")
 
 class TriageResponse(BaseModel):
     distress_id: str
     status: str
     assigned_team: Optional[dict]
     nearest_shelter: Optional[dict]
+    cell_verification: Optional[dict] = None
 
 # --- FASTAPI APP ---
 app = FastAPI(title="Innovate Odisha - AI Disaster Response API (MySQL)")
@@ -111,13 +188,33 @@ app = FastAPI(title="Innovate Odisha - AI Disaster Response API (MySQL)")
 def on_startup():
     init_db()
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def health_check():
     return {"status": "online", "message": "Odisha Disaster Management API is running"}
 
 @app.post("/api/v1/sos/triage", response_model=TriageResponse, status_code=status.HTTP_201_CREATED)
 def handle_sos_report(payload: SOSRequest, db: Session = Depends(get_db)):
-    sos_wkt = f"POINT({payload.longitude} {payload.latitude})"
+    lat = payload.latitude
+    lon = payload.longitude
+    cell_info = None
+
+    # 0. Optional Cell Tower Verification & GPS Fallback
+    if payload.mcc and payload.mnc and payload.lac and payload.cid:
+        cell_info = verify_cell_tower(
+            lat, lon,
+            payload.mcc, payload.mnc, payload.lac, payload.cid, payload.radio
+        )
+        if (lat is None or lon is None) and cell_info.get("tower_lat") is not None:
+            lat = cell_info["tower_lat"]
+            lon = cell_info["tower_lon"]
+
+    if lat is None or lon is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Either GPS coordinates (latitude/longitude) or valid cell tower details are required."
+        )
+
+    sos_wkt = f"POINT({lon} {lat})"
     report_id = str(uuid.uuid4())
 
     # 1. Spatial Query: Closest shelter with available capacity
@@ -199,7 +296,8 @@ def handle_sos_report(payload: SOSRequest, db: Session = Depends(get_db)):
         "distress_id": report_id,
         "status": assigned_status,
         "assigned_team": team_info,
-        "nearest_shelter": shelter_info
+        "nearest_shelter": shelter_info,
+        "cell_verification": cell_info
     }
 
 @app.post("/api/v1/responders/reset")
