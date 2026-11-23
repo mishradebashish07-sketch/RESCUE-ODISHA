@@ -84,6 +84,15 @@ else:
 lat = st.sidebar.number_input("Latitude", value=live_lat, format="%.6f")
 lon = st.sidebar.number_input("Longitude", value=live_lon, format="%.6f")
 
+# --- CELL TOWER VERIFICATION ---
+with st.sidebar.expander("📡 Cell Tower Verification (Optional)"):
+    use_cell = st.checkbox("Verify GPS with Cell Tower", value=False)
+    radio = st.selectbox("Network Type", ["lte", "gsm", "umts"])
+    mcc = st.number_input("MCC (India: 404 or 405)", value=404, step=1)
+    mnc = st.number_input("MNC (Operator Code)", value=49, step=1)
+    lac = st.number_input("LAC / TAC", value=31, step=1)
+    cid = st.number_input("Cell ID (CID)", value=1161, step=1)
+
 # --- LIVE RENDER BACKEND URL ---
 API_BASE = "https://rescue-odisha.onrender.com/api/v1"
 
@@ -96,7 +105,16 @@ odraf_units = [
 shelters = [
     {"name": "Chandipur Cyclone Shelter (Baleswar)", "loc": [21.4680, 87.0130]},
     {"name": "Barabati Multipurpose Shelter (Cuttack)", "loc": [20.4812, 85.8732]},
-    {"name": "Chhatrapur Relief Camp (Ganjam)", "loc": [19.3550, 84.9920]}
+    {"name": "Chhatrapur Relief Camp (Ganjam)", "loc": [19.3550, 84.9920]},
+    {"name": "Puri Coastal Cyclone Shelter (Puri)", "loc": [19.7983, 85.8249]},
+    {"name": "Paradip Port Multipurpose Shelter (Jagatsinghpur)", "loc": [20.3166, 86.6114]},
+    {"name": "Rajnagar Coastal Shelter (Kendrapara)", "loc": [20.5736, 86.7267]},
+    {"name": "Dhamra Relief Shelter (Bhadrak)", "loc": [20.7931, 86.9061]},
+    {"name": "Bhubaneswar Unit-6 Relief Center (Khordha)", "loc": [20.2689, 85.8266]},
+    {"name": "Hirakud Flood Shelter (Sambalpur)", "loc": [21.4669, 83.9812]},
+    {"name": "Baripada Multipurpose Shelter (Mayurbhanj)", "loc": [21.9347, 86.7337]},
+    {"name": "Jajpur Town Flood Relief Camp (Jajpur)", "loc": [20.8484, 86.3377]},
+    {"name": "Rayagada Emergency Relief Center (Rayagada)", "loc": [19.1712, 83.4163]}
 ]
 
 # --- ACTION BUTTONS ---
@@ -109,6 +127,15 @@ if st.sidebar.button("Dispatch SOS & Run Triage"):
         "category": category,
         "severity_score": severity
     }
+    if use_cell:
+        payload.update({
+            "radio": radio,
+            "mcc": int(mcc),
+            "mnc": int(mnc),
+            "lac": int(lac),
+            "cid": int(cid)
+        })
+
     try:
         with st.sidebar:
             with st.spinner("Contacting Rescue Odisha backend..."):
@@ -116,6 +143,17 @@ if st.sidebar.button("Dispatch SOS & Run Triage"):
         if res.status_code == 201:
             data = res.json()
             st.sidebar.success(f"Status: {data['status']}")
+
+            cell_v = data.get("cell_verification")
+            if cell_v:
+                if cell_v.get("verified"):
+                    st.sidebar.success(
+                        f"📡 Cell Verified ({cell_v.get('distance_from_tower_km')} km from tower)"
+                    )
+                else:
+                    st.sidebar.warning(
+                        f"⚠️ Cell Unverified: {cell_v.get('reason') or str(cell_v.get('distance_from_tower_km')) + ' km away'}"
+                    )
 
             st.session_state.dispatches.append({
                 "lat": lat,
