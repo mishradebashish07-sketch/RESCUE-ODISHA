@@ -2,6 +2,7 @@ import streamlit as st
 import folium
 from streamlit_folium import st_folium
 import requests
+from streamlit_geolocation import streamlit_geolocation
 
 st.set_page_config(page_title="Odisha AI Disaster Response", layout="wide")
 
@@ -64,8 +65,24 @@ category = st.sidebar.selectbox(
     index=["flood_evacuation", "medical_emergency", "cyclone_shelter", "general_alert"].index(auto_cat)
 )
 severity = st.sidebar.slider("Severity Level (1-5)", 1, 5, auto_sev)
-lat = st.sidebar.number_input("Latitude", value=default_lat, format="%.4f")
-lon = st.sidebar.number_input("Longitude", value=default_lon, format="%.4f")
+
+# --- AUTO-FETCH LIVE GPS ---
+st.sidebar.markdown("### 📍 Live GPS Location")
+with st.sidebar:
+    gps = streamlit_geolocation()
+
+if demo_choice == "Custom Input" and gps and gps.get("latitude") is not None and gps.get("longitude") is not None:
+    live_lat = float(gps["latitude"])
+    live_lon = float(gps["longitude"])
+    accuracy_m = round(float(gps.get("accuracy", 0)), 1)
+    st.sidebar.success(f"GPS Locked (±{accuracy_m} m)")
+else:
+    live_lat, live_lon = default_lat, default_lon
+    if demo_choice == "Custom Input":
+        st.sidebar.info("Click the target icon above to auto-fetch your GPS.")
+
+lat = st.sidebar.number_input("Latitude", value=live_lat, format="%.6f")
+lon = st.sidebar.number_input("Longitude", value=live_lon, format="%.6f")
 
 # --- LIVE RENDER BACKEND URL ---
 API_BASE = "https://rescue-odisha.onrender.com/api/v1"
@@ -93,11 +110,13 @@ if st.sidebar.button("Dispatch SOS & Run Triage"):
         "severity_score": severity
     }
     try:
-        res = requests.post(f"{API_BASE}/sos/triage", json=payload)
+        with st.sidebar:
+            with st.spinner("Contacting Rescue Odisha backend..."):
+                res = requests.post(f"{API_BASE}/sos/triage", json=payload, timeout=60)
         if res.status_code == 201:
             data = res.json()
             st.sidebar.success(f"Status: {data['status']}")
-            
+
             st.session_state.dispatches.append({
                 "lat": lat,
                 "lon": lon,
@@ -105,8 +124,10 @@ if st.sidebar.button("Dispatch SOS & Run Triage"):
                 "team": data.get("assigned_team"),
                 "shelter": data.get("nearest_shelter")
             })
+        elif res.status_code == 502:
+            st.sidebar.error("Backend is waking up (502). Wait 10 seconds and click Dispatch again.")
         else:
-            st.sidebar.error(f"Error {res.status_code}: {res.text}")
+            st.sidebar.error(f"Error {res.status_code}: {res.text[:200]}")
     except Exception as e:
         st.sidebar.error(f"Backend connection failed: {e}")
 
@@ -115,11 +136,13 @@ st.sidebar.markdown("---")
 # Reset Responder Units Button (Calls the FastAPI endpoint)
 if st.sidebar.button("🔄 Reset Responder Availability"):
     try:
-        r = requests.post(f"{API_BASE}/responders/reset")
+        with st.sidebar:
+            with st.spinner("Resetting ODRAF units..."):
+                r = requests.post(f"{API_BASE}/responders/reset", timeout=60)
         if r.status_code == 200:
             st.sidebar.success("All ODRAF teams are now available!")
         else:
-            st.sidebar.error("Could not reset responders.")
+            st.sidebar.error(f"Could not reset responders ({r.status_code}).")
     except Exception as e:
         st.sidebar.error(f"Failed to reset: {e}")
 
@@ -210,6 +233,6 @@ for item in st.session_state.dispatches:
                              </div>"""
                 )
             ).add_to(m)
-            
+
 # Display Map
 st_folium(m, width=1100, height=580, key=f"map_{len(st.session_state.dispatches)}")
