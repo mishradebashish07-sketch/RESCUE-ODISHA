@@ -29,6 +29,7 @@ engine = create_engine(
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+
 def get_db():
     db = SessionLocal()
     try:
@@ -36,9 +37,11 @@ def get_db():
     finally:
         db.close()
 
-# --- CELL TOWER VERIFICATION (Unwired Labs / OpenCelliD) ---
+
+# --- CELL TOWER VERIFICATION & FALLBACK (Unwired Labs / OpenCelliD) ---
 UNWIRED_TOKEN = os.getenv("UNWIREDLABS_TOKEN")
 UNWIRED_URL = "https://us1.unwiredlabs.com/v2/process"
+
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371.0
@@ -51,6 +54,7 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
         * math.sin(dlon / 2) ** 2
     )
     return 2 * R * math.asin(math.sqrt(a))
+
 
 def verify_cell_tower(
     gps_lat: Optional[float],
@@ -101,6 +105,7 @@ def verify_cell_tower(
         "approx_address": data.get("address")
     }
 
+
 # --- AUTO-CREATE TABLES & SEED DATA ON STARTUP ---
 def init_db():
     with engine.begin() as conn:
@@ -140,24 +145,30 @@ def init_db():
             );
         """))
 
-        # Seed Shelters if table is empty
-        shelter_count = conn.execute(text("SELECT COUNT(*) FROM shelters")).scalar()
-        if shelter_count == 0:
-            conn.execute(text("""
-                INSERT INTO shelters (id, name, contact_phone, total_capacity, current_occupancy, location) VALUES
-                ('sh-1', 'Chandipur Cyclone Shelter (Baleswar)', '+91-6782-270001', 500, 50, ST_PointFromText('POINT(87.0130 21.4680)', 4326)),
-                ('sh-2', 'Barabati Multipurpose Shelter (Cuttack)', '+91-671-2300002', 600, 80, ST_PointFromText('POINT(85.8732 20.4812)', 4326)),
-                ('sh-3', 'Chhatrapur Relief Camp (Ganjam)', '+91-6811-263003', 450, 40, ST_PointFromText('POINT(84.9920 19.3550)', 4326));
-            """))
+        # Seed Shelters across Odisha
+        conn.execute(text("""
+            INSERT IGNORE INTO shelters (id, name, contact_phone, total_capacity, current_occupancy, location) VALUES
+            ('sh-1', 'Chandipur Cyclone Shelter (Baleswar)', '+91-6782-270001', 500, 50, ST_PointFromText('POINT(87.0130 21.4680)', 4326)),
+            ('sh-2', 'Barabati Multipurpose Shelter (Cuttack)', '+91-671-2300002', 600, 80, ST_PointFromText('POINT(85.8732 20.4812)', 4326)),
+            ('sh-3', 'Chhatrapur Relief Camp (Ganjam)', '+91-6811-263003', 450, 40, ST_PointFromText('POINT(84.9920 19.3550)', 4326)),
+            ('sh-4', 'Puri Coastal Cyclone Shelter (Puri)', '+91-6752-222004', 700, 120, ST_PointFromText('POINT(85.8249 19.7983)', 4326)),
+            ('sh-5', 'Paradip Port Multipurpose Shelter (Jagatsinghpur)', '+91-6722-222005', 650, 90, ST_PointFromText('POINT(86.6114 20.3166)', 4326)),
+            ('sh-6', 'Rajnagar Coastal Shelter (Kendrapara)', '+91-6729-272006', 550, 60, ST_PointFromText('POINT(86.7267 20.5736)', 4326)),
+            ('sh-7', 'Dhamra Relief Shelter (Bhadrak)', '+91-6784-251007', 500, 70, ST_PointFromText('POINT(86.9061 20.7931)', 4326)),
+            ('sh-8', 'Bhubaneswar Unit-6 Relief Center (Khordha)', '+91-674-2530008', 800, 100, ST_PointFromText('POINT(85.8266 20.2689)', 4326)),
+            ('sh-9', 'Hirakud Flood Shelter (Sambalpur)', '+91-663-2400009', 500, 30, ST_PointFromText('POINT(83.9812 21.4669)', 4326)),
+            ('sh-10', 'Baripada Multipurpose Shelter (Mayurbhanj)', '+91-6792-252010', 450, 25, ST_PointFromText('POINT(86.7337 21.9347)', 4326)),
+            ('sh-11', 'Jajpur Town Flood Relief Camp (Jajpur)', '+91-6728-222011', 500, 45, ST_PointFromText('POINT(86.3377 20.8484)', 4326)),
+            ('sh-12', 'Rayagada Emergency Relief Center (Rayagada)', '+91-6856-222012', 400, 20, ST_PointFromText('POINT(83.4163 19.1712)', 4326));
+        """))
 
-        # Seed ODRAF Units if table is empty
-        unit_count = conn.execute(text("SELECT COUNT(*) FROM responder_units")).scalar()
-        if unit_count == 0:
-            conn.execute(text("""
-                INSERT INTO responder_units (id, team_name, team_type, is_available, location) VALUES
-                ('odraf-3', 'ODRAF Unit 3 (Inflatable Boat Team)', 'Flood Rescue', TRUE, ST_PointFromText('POINT(86.9100 21.4800)', 4326)),
-                ('odraf-1', 'ODRAF Unit 1 (Bhubaneswar Rapid Action)', 'Rapid Response', TRUE, ST_PointFromText('POINT(85.8200 20.2961)', 4326));
-            """))
+        # Seed ODRAF Units
+        conn.execute(text("""
+            INSERT IGNORE INTO responder_units (id, team_name, team_type, is_available, location) VALUES
+            ('odraf-3', 'ODRAF Unit 3 (Inflatable Boat Team)', 'Flood Rescue', TRUE, ST_PointFromText('POINT(86.9100 21.4800)', 4326)),
+            ('odraf-1', 'ODRAF Unit 1 (Bhubaneswar Rapid Action)', 'Rapid Response', TRUE, ST_PointFromText('POINT(85.8200 20.2961)', 4326));
+        """))
+
 
 # --- PYDANTIC SCHEMAS ---
 class SOSRequest(BaseModel):
@@ -174,31 +185,38 @@ class SOSRequest(BaseModel):
     cid: Optional[int] = Field(None, example=1161)
     radio: str = Field("lte", example="lte")
 
+
 class TriageResponse(BaseModel):
     distress_id: str
     status: str
+    resolved_location: dict
     assigned_team: Optional[dict]
     nearest_shelter: Optional[dict]
     cell_verification: Optional[dict] = None
 
+
 # --- FASTAPI APP ---
 app = FastAPI(title="Innovate Odisha - AI Disaster Response API (MySQL)")
+
 
 @app.on_event("startup")
 def on_startup():
     init_db()
 
+
 @app.api_route("/", methods=["GET", "HEAD"])
 def health_check():
     return {"status": "online", "message": "Odisha Disaster Management API is running"}
+
 
 @app.post("/api/v1/sos/triage", response_model=TriageResponse, status_code=status.HTTP_201_CREATED)
 def handle_sos_report(payload: SOSRequest, db: Session = Depends(get_db)):
     lat = payload.latitude
     lon = payload.longitude
+    location_source = "GPS"
     cell_info = None
 
-    # 0. Optional Cell Tower Verification & GPS Fallback
+    # 0. Cell Tower Fallback (when GPS fails) or Verification (when both are sent)
     if payload.mcc and payload.mnc and payload.lac and payload.cid:
         cell_info = verify_cell_tower(
             lat, lon,
@@ -207,11 +225,12 @@ def handle_sos_report(payload: SOSRequest, db: Session = Depends(get_db)):
         if (lat is None or lon is None) and cell_info.get("tower_lat") is not None:
             lat = cell_info["tower_lat"]
             lon = cell_info["tower_lon"]
+            location_source = "CELL_TOWER"
 
     if lat is None or lon is None:
         raise HTTPException(
             status_code=400,
-            detail="Either GPS coordinates (latitude/longitude) or valid cell tower details are required."
+            detail="GPS failed and cell tower lookup could not locate the device."
         )
 
     sos_wkt = f"POINT({lon} {lat})"
@@ -219,7 +238,7 @@ def handle_sos_report(payload: SOSRequest, db: Session = Depends(get_db)):
 
     # 1. Spatial Query: Closest shelter with available capacity
     shelter_query = text("""
-        SELECT id, name, contact_phone, 
+        SELECT id, name, contact_phone,
                ST_Distance_Sphere(location, ST_PointFromText(:sos_point, 4326)) AS distance_meters
         FROM shelters
         WHERE current_occupancy < total_capacity
@@ -230,7 +249,7 @@ def handle_sos_report(payload: SOSRequest, db: Session = Depends(get_db)):
 
     # 2. Spatial Query: Closest available ODRAF / rescue unit
     responder_query = text("""
-        SELECT id, team_name, team_type, 
+        SELECT id, team_name, team_type,
                ST_Distance_Sphere(location, ST_PointFromText(:sos_point, 4326)) AS distance_meters
         FROM responder_units
         WHERE is_available = TRUE
@@ -246,10 +265,10 @@ def handle_sos_report(payload: SOSRequest, db: Session = Depends(get_db)):
     # 3. Record distress report in database
     insert_sos = text("""
         INSERT INTO distress_reports (
-            id, reporter_contact, raw_message, category, 
+            id, reporter_contact, raw_message, category,
             severity_score, location, status, assigned_responder_id, nearest_shelter_id, created_at
         ) VALUES (
-            :id, :contact, :message, :category, 
+            :id, :contact, :message, :category,
             :score, ST_PointFromText(:sos_point, 4326), :status, :responder_id, :shelter_id, NOW()
         );
     """)
@@ -295,10 +314,16 @@ def handle_sos_report(payload: SOSRequest, db: Session = Depends(get_db)):
     return {
         "distress_id": report_id,
         "status": assigned_status,
+        "resolved_location": {
+            "latitude": lat,
+            "longitude": lon,
+            "source": location_source
+        },
         "assigned_team": team_info,
         "nearest_shelter": shelter_info,
         "cell_verification": cell_info
     }
+
 
 @app.post("/api/v1/responders/reset")
 def reset_responders(db: Session = Depends(get_db)):
