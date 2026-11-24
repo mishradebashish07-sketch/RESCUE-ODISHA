@@ -7,7 +7,7 @@ from streamlit_geolocation import streamlit_geolocation
 st.set_page_config(page_title="Odisha AI Disaster Response", layout="wide")
 
 st.title("🌊 RESCUE ODISHA 🌊 ")
-st.caption("Command Center for Zero-Casualty Rescue Dispatch | Innovate Odisha")
+st.caption("Command Center for Zero-Casualty Rescue Dispatch")
 
 # --- SESSION STATE PERSISTENCE ---
 if "dispatches" not in st.session_state:
@@ -54,7 +54,7 @@ else:
     default_msg = "Severe waterlogging, roof rescue needed."
     default_lat, default_lon = 21.4700, 86.9300
 
-contact = st.sidebar.text_input("Reporter Phone", value="+919876543210")
+contact = st.sidebar.text_input("Reporter Phone", value="Enter your contact number")
 msg = st.sidebar.text_area("Distress Details (English / Odia)", value=default_msg)
 
 auto_cat, auto_sev = analyze_distress_text(msg)
