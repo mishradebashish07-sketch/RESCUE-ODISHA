@@ -167,4 +167,201 @@ def init_db():
         conn.execute(text("""
             INSERT IGNORE INTO responder_units (id, team_name, team_type, is_available, location) VALUES
             ('odraf-3', 'ODRAF Unit 3 (Inflatable Boat Team)', 'Flood Rescue', TRUE, ST_PointFromText('POINT(86.9100 21.4800)', 4326)),
-            ('odraf-1', 'ODRAF Unit 1 (B
+            ('odraf-1', 'ODRAF Unit 1 (Bhubaneswar Rapid Action)', 'Rapid Response', TRUE, ST_PointFromText('POINT(85.8200 20.2961)', 4326));
+        """))
+
+
+# --- PYDANTIC SCHEMAS ---
+class SOSRequest(BaseModel):
+    reporter_contact: Optional[str] = Field(None, example="+919876543210")
+    message: str = Field(..., example="Flooding near market, 4 people stranded on roof")
+    latitude: Optional[float] = Field(None, ge=-90.0, le=90.0, example=21.4680)
+    longitude: Optional[float] = Field(None, ge=-180.0, le=180.0, example=87.0130)
+    category: str = Field("flood_rescue", example="flood_rescue")
+    severity_score: int = Field(4, ge=1, le=5)
+    # Optional Cell Tower fields
+    mcc: Optional[int] = Field(None, example=404)
+    mnc: Optional[int] = Field(None, example=49)
+    lac: Optional[int] = Field(None, example=31)
+    cid: Optional[int] = Field(None, example=1161)
+    radio: str = Field("lte", example="lte")
+
+
+class TriageResponse(BaseModel):
+    distress_id: str
+    status: str
+    resolved_location: dict
+    assigned_team: Optional[dict]
+    nearest_shelter: Optional[dict]
+    cell_verification: Optional[dict] = None
+
+
+# --- FASTAPI APP ---
+app = FastAPI(title="Innovate Odisha - AI Disaster Response API (MySQL)")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+def on_startup():
+    init_db()
+
+
+@app.api_route("/", methods=["GET", "HEAD"])
+def health_check():
+    return {"status": "online", "message": "Odisha Disaster Management API is running"}
+
+
+@app.post("/api/v1/sos/triage", response_model=TriageResponse, status_code=status.HTTP_201_CREATED)
+def handle_sos_report(payload: SOSRequest, db: Session = Depends(get_db)):
+    lat = payload.latitude
+    lon = payload.longitude
+    location_source = "GPS"
+    cell_info = None
+
+    # 0. Cell Tower Fallback (when GPS fails) or Verification (when both are sent)
+    if payload.mcc and payload.mnc and payload.lac and payload.cid:
+        cell_info = verify_cell_tower(
+            lat, lon,
+            payload.mcc, payload.mnc, payload.lac, payload.cid, payload.radio
+        )
+        if (lat is None or lon is None) and cell_info.get("tower_lat") is not None:
+            lat = cell_info["tower_lat"]
+            lon = cell_info["tower_lon"]
+            location_source = "CELL_TOWER"
+
+    if lat is None or lon is None:
+        raise HTTPException(
+            status_code=400,
+            detail="GPS failed and cell tower lookup could not locate the device."
+        )
+
+    sos_wkt = f"POINT({lon} {lat})"
+    report_id = str(uuid.uuid4())
+
+    # 1. Spatial Query: Closest shelter with available capacity
+    shelter_query = text("""
+        SELECT id, name, contact_phone,
+               ST_Distance_Sphere(location, ST_PointFromText(:sos_point, 4326)) AS distance_meters
+        FROM shelters
+        WHERE current_occupancy < total_capacity
+        ORDER BY distance_meters ASC
+        LIMIT 1;
+    """)
+    nearest_shelter = db.execute(shelter_query, {"sos_point": sos_wkt}).mappings().first()
+
+    # 2. Spatial Query: Closest available ODRAF / rescue unit
+    responder_query = text("""
+        SELECT id, team_name, team_type,
+               ST_Distance_Sphere(location, ST_PointFromText(:sos_point, 4326)) AS distance_meters
+        FROM responder_units
+        WHERE is_available = TRUE
+        ORDER BY distance_meters ASC
+        LIMIT 1;
+    """)
+    closest_responder = db.execute(responder_query, {"sos_point": sos_wkt}).mappings().first()
+
+    shelter_id = str(nearest_shelter["id"]) if nearest_shelter else None
+    responder_id = str(closest_responder["id"]) if closest_responder else None
+    assigned_status = "ASSIGNED" if closest_responder else "QUEUED"
+
+    # 3. Record distress report in database
+    insert_sos = text("""
+        INSERT INTO distress_reports (
+            id, reporter_contact, raw_message, category,
+            severity_score, location, status, assigned_responder_id, nearest_shelter_id, created_at
+        ) VALUES (
+            :id, :contact, :message, :category,
+            :score, ST_PointFromText(:sos_point, 4326), :status, :responder_id, :shelter_id, NOW()
+        );
+    """)
+    db.execute(insert_sos, {
+        "id": report_id,
+        "contact": payload.reporter_contact,
+        "message": payload.message,
+        "category": payload.category,
+        "score": payload.severity_score,
+        "sos_point": sos_wkt,
+        "status": assigned_status,
+        "responder_id": responder_id,
+        "shelter_id": shelter_id
+    })
+
+    # Mark responder unit as busy
+    if responder_id:
+        db.execute(
+            text("UPDATE responder_units SET is_available = FALSE WHERE id = :resp_id;"),
+            {"resp_id": responder_id}
+        )
+
+    db.commit()
+
+    shelter_info = None
+    if nearest_shelter:
+        shelter_info = {
+            "id": str(nearest_shelter["id"]),
+            "name": nearest_shelter["name"],
+            "distance_km": round(nearest_shelter["distance_meters"] / 1000.0, 2),
+            "contact": nearest_shelter["contact_phone"]
+        }
+
+    team_info = None
+    if closest_responder:
+        team_info = {
+            "id": str(closest_responder["id"]),
+            "team_name": closest_responder["team_name"],
+            "team_type": closest_responder["team_type"],
+            "distance_km": round(closest_responder["distance_meters"] / 1000.0, 2)
+        }
+
+    return {
+        "distress_id": report_id,
+        "status": assigned_status,
+        "resolved_location": {
+            "latitude": lat,
+            "longitude": lon,
+            "source": location_source
+        },
+        "assigned_team": team_info,
+        "nearest_shelter": shelter_info,
+        "cell_verification": cell_info
+    }
+
+
+@app.post("/api/v1/responders/reset")
+def reset_responders(db: Session = Depends(get_db)):
+    """Resets all responder units back to available status for testing/demos."""
+    db.execute(text("UPDATE responder_units SET is_available = TRUE;"))
+    db.commit()
+    return {"status": "success", "message": "All rescue units are now marked available."}
+
+
+@app.get("/api/v1/dispatches")
+def get_active_dispatches(db: Session = Depends(get_db)):
+    """Fetches the latest 50 SOS dispatches from MySQL for the Command Center."""
+    query = text("""
+        SELECT
+            d.id,
+            d.reporter_contact,
+            d.raw_message,
+            d.category,
+            d.severity_score,
+            d.status,
+            ST_X(d.location) AS longitude,
+            ST_Y(d.location) AS latitude,
+            r.team_name,
+            s.name AS shelter_name
+        FROM distress_reports d
+        LEFT JOIN responder_units r ON d.assigned_responder_id = r.id
+        LEFT JOIN shelters s ON d.nearest_shelter_id = s.id
+        ORDER BY d.created_at DESC
+        LIMIT 50;
+    """)
+    rows = db.execute(query).mappings().all()
+    return [dict(row) for row in rows]
