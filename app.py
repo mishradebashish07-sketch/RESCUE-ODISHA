@@ -2,110 +2,16 @@ import streamlit as st
 import folium
 from streamlit_folium import st_folium
 import requests
-from streamlit_geolocation import streamlit_geolocation
 
-st.set_page_config(page_title="Odisha AI Disaster Response", layout="wide")
+st.set_page_config(page_title="Rescue Odisha - Command Center", layout="wide")
 
-st.title("🌊 RESCUE ODISHA 🌊 ")
-st.caption("Command Center for Zero-Casualty Rescue Dispatch")
-
-# --- SESSION STATE PERSISTENCE ---
-if "dispatches" not in st.session_state:
-    st.session_state.dispatches = []
-
-# --- ODIA NLP HELPER ---
-def analyze_distress_text(text: str):
-    text_lower = text.lower()
-    flood_keywords = ["ବନ୍ୟା", "ପାଣି", "banya", "pani", "flood", "water", "stranded", "drowning", "roof"]
-    medical_keywords = ["ଡାକ୍ତରଖାନା", "ରକ୍ତ", "ଚିକିତ୍ସା", "doctor", "medical", "hospital", "injured", "aghata", "pregnant"]
-    cyclone_keywords = ["ବାତ୍ୟା", "ଝଡ଼", "cyclone", "wind", "shelter", "ashraya"]
-
-    if any(k in text_lower for k in flood_keywords):
-        return "flood_evacuation", 5
-    elif any(k in text_lower for k in medical_keywords):
-        return "medical_emergency", 4
-    elif any(k in text_lower for k in cyclone_keywords):
-        return "cyclone_shelter", 3
-    return "general_alert", 3
-
-# --- SIDEBAR INTERFACE ---
-st.sidebar.header("🚨 Report Citizen SOS")
-
-demo_choice = st.sidebar.selectbox(
-    "Load Demo Scenario:",
-    [
-        "Custom Input",
-        "Baleswar Coastal Flood (Odia)",
-        "Cuttack River Overflow (English)",
-        "Ganjam Medical Evacuation"
-    ]
-)
-
-if demo_choice == "Baleswar Coastal Flood (Odia)":
-    default_msg = "ଘରେ ବନ୍ୟା ପାଣି ପଶିଯାଇଛି, ଛାତ ଉପରେ ୪ ଜଣ ଫସିଛନ୍ତି (Water entered house, 4 trapped on roof)"
-    default_lat, default_lon = 21.4700, 86.9300
-elif demo_choice == "Cuttack River Overflow (English)":
-    default_msg = "Mahanadi water level breached embankment, need urgent boat rescue."
-    default_lat, default_lon = 20.4850, 85.8800
-elif demo_choice == "Ganjam Medical Evacuation":
-    default_msg = "Elderly patient injured during storm, urgently requires medical support."
-    default_lat, default_lon = 19.3600, 84.9900
-else:
-    default_msg = "Severe waterlogging, roof rescue needed."
-    default_lat, default_lon = 21.4700, 86.9300
-
-contact = st.sidebar.text_input("Reporter Phone", value="Enter your contact number")
-msg = st.sidebar.text_area("Distress Details (English / Odia)", value=default_msg)
-
-auto_cat, auto_sev = analyze_distress_text(msg)
-
-category = st.sidebar.selectbox(
-    "Category (Auto-Detected)",
-    ["flood_evacuation", "medical_emergency", "cyclone_shelter", "general_alert"],
-    index=["flood_evacuation", "medical_emergency", "cyclone_shelter", "general_alert"].index(auto_cat)
-)
-severity = st.sidebar.slider("Severity Level (1-5)", 1, 5, auto_sev)
-
-# --- AUTO-FETCH LIVE GPS ---
-# --- LOCATION MODE (GPS WITH CELL TOWER FALLBACK) ---
-st.sidebar.markdown("### 📍 Location Source")
-location_mode = st.sidebar.radio(
-    "Select Mode:",
-    ["Live GPS / Manual", "📡 GPS Failed (Use Cell Tower Fallback)"]
-)
-
-lat, lon = None, None
-use_cell = False
-
-if location_mode == "Live GPS / Manual":
-    with st.sidebar:
-        gps = streamlit_geolocation()
-
-    if demo_choice == "Custom Input" and gps and gps.get("latitude") is not None and gps.get("longitude") is not None:
-        live_lat = float(gps["latitude"])
-        live_lon = float(gps["longitude"])
-        accuracy_m = round(float(gps.get("accuracy", 0)), 1)
-        st.sidebar.success(f"GPS Locked (±{accuracy_m} m)")
-    else:
-        live_lat, live_lon = default_lat, default_lon
-        if demo_choice == "Custom Input":
-            st.sidebar.info("Click the target icon above to auto-fetch GPS.")
-
-    lat = st.sidebar.number_input("Latitude", value=live_lat, format="%.6f")
-    lon = st.sidebar.number_input("Longitude", value=live_lon, format="%.6f")
-else:
-    use_cell = True
-    st.sidebar.warning("GPS unavailable — locating via nearest Cell Tower.")
-    radio = st.sidebar.selectbox("Network Type", ["lte", "gsm", "umts"])
-    mcc = st.sidebar.number_input("MCC (India: 404 or 405)", value=404, step=1)
-    mnc = st.sidebar.number_input("MNC (Operator Code)", value=49, step=1)
-    lac = st.sidebar.number_input("LAC / TAC", value=31, step=1)
-    cid = st.sidebar.number_input("Cell ID (CID)", value=1161, step=1)
+st.title("🌊 RESCUE ODISHA — COMMAND CENTER")
+st.caption("Live Emergency Operations & ODRAF Dispatch Monitor | Innovate Odisha")
 
 # --- LIVE RENDER BACKEND URL ---
 API_BASE = "https://rescue-odisha.onrender.com/api/v1"
 
-# Known units and coordinates
+# --- KNOWN UNITS & SHELTERS ---
 odraf_units = [
     {"name": "ODRAF Unit 3 (Inflatable Boat Team)", "loc": [21.4800, 86.9100]},
     {"name": "ODRAF Unit 1 (Bhubaneswar Rapid Action)", "loc": [20.2961, 85.8200]}
@@ -126,62 +32,44 @@ shelters = [
     {"name": "Rayagada Emergency Relief Center (Rayagada)", "loc": [19.1712, 83.4163]}
 ]
 
-# --- ACTION BUTTONS ---
-if st.sidebar.button("Dispatch SOS & Run Triage"):
-    payload = {
-        "reporter_contact": contact,
-        "message": msg,
-        "latitude": lat,
-        "longitude": lon,
-        "category": category,
-        "severity_score": severity
-    }
-    if use_cell:
-        payload.update({
-            "radio": radio,
-            "mcc": int(mcc),
-            "mnc": int(mnc),
-            "lac": int(lac),
-            "cid": int(cid)
-        })
-
+# --- FETCH LIVE DISPATCHES FROM MYSQL ---
+def fetch_dispatches():
     try:
-        with st.sidebar:
-            with st.spinner("Contacting Rescue Odisha backend..."):
-                res = requests.post(f"{API_BASE}/sos/triage", json=payload, timeout=60)
-        if res.status_code == 201:
-            data = res.json()
-            st.sidebar.success(f"Status: {data['status']}")
-
-            cell_v = data.get("cell_verification")
-            if cell_v:
-                if cell_v.get("verified"):
-                    st.sidebar.success(
-                        f"📡 Cell Verified ({cell_v.get('distance_from_tower_km')} km from tower)"
-                    )
-                else:
-                    st.sidebar.warning(
-                        f"⚠️ Cell Unverified: {cell_v.get('reason') or str(cell_v.get('distance_from_tower_km')) + ' km away'}"
-                    )
-
-            st.session_state.dispatches.append({
-                "lat": lat,
-                "lon": lon,
-                "msg": msg,
-                "team": data.get("assigned_team"),
-                "shelter": data.get("nearest_shelter")
-            })
-        elif res.status_code == 502:
-            st.sidebar.error("Backend is waking up (502). Wait 10 seconds and click Dispatch again.")
-        else:
-            st.sidebar.error(f"Error {res.status_code}: {res.text[:200]}")
+        res = requests.get(f"{API_BASE}/dispatches", timeout=30)
+        if res.status_code == 200:
+            return res.json(), None
+        return [], f"Backend returned {res.status_code}"
     except Exception as e:
-        st.sidebar.error(f"Backend connection failed: {e}")
+        return [], str(e)
+
+if "live_alerts" not in st.session_state:
+    alerts, err = fetch_dispatches()
+    st.session_state.live_alerts = alerts
+    if err:
+        st.sidebar.warning(f"Initial load failed: {err}")
+
+# --- SIDEBAR CONTROLS ---
+st.sidebar.header("🎛️ Command Controls")
+
+if st.sidebar.button("🔄 Refresh Live Citizen Alerts", use_container_width=True):
+    with st.sidebar:
+        with st.spinner("Fetching latest SOS alerts..."):
+            alerts, err = fetch_dispatches()
+    if err:
+        st.sidebar.error(f"Could not refresh: {err}")
+    else:
+        st.session_state.live_alerts = alerts
+        st.sidebar.success(f"Synced {len(alerts)} active alerts")
+
+status_filter = st.sidebar.multiselect(
+    "Filter by Status",
+    options=["ASSIGNED", "QUEUED"],
+    default=["ASSIGNED", "QUEUED"]
+)
 
 st.sidebar.markdown("---")
 
-# Reset Responder Units Button (Calls the FastAPI endpoint)
-if st.sidebar.button("🔄 Reset Responder Availability"):
+if st.sidebar.button("🚤 Reset ODRAF Availability", use_container_width=True):
     try:
         with st.sidebar:
             with st.spinner("Resetting ODRAF units..."):
@@ -193,12 +81,19 @@ if st.sidebar.button("🔄 Reset Responder Availability"):
     except Exception as e:
         st.sidebar.error(f"Failed to reset: {e}")
 
-if st.sidebar.button("🧹 Clear Map Alerts"):
-    st.session_state.dispatches = []
-    st.rerun()
+# Filter alerts
+all_alerts = st.session_state.live_alerts
+filtered_alerts = [a for a in all_alerts if a.get("status") in status_filter]
 
-# --- BUILD MAP ---
-m = folium.Map(location=[20.65, 86.0], zoom_start=8)
+# --- TOP KPI METRICS ---
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Total SOS Alerts", len(all_alerts))
+col2.metric("Teams Assigned", sum(1 for a in all_alerts if a.get("status") == "ASSIGNED"))
+col3.metric("Queued (Needs Unit)", sum(1 for a in all_alerts if a.get("status") == "QUEUED"))
+col4.metric("Critical (Severity 4–5)", sum(1 for a in all_alerts if (a.get("severity_score") or 0) >= 4))
+
+# --- BUILD LIVE ODISHA MAP ---
+m = folium.Map(location=[20.55, 85.85], zoom_start=7)
 
 # 1. Base Shelters (Green)
 for s in shelters:
@@ -218,68 +113,74 @@ for r in odraf_units:
         icon=folium.Icon(color="blue", icon="info-sign")
     ).add_to(m)
 
-# 3. Dispatches & Route Lines
-for item in st.session_state.dispatches:
-    # Red Distress Flag
+# 3. Live Citizen SOS Pins & Dispatch Routes
+for item in filtered_alerts:
+    lat = item.get("latitude")
+    lon = item.get("longitude")
+    if lat is None or lon is None:
+        continue
+
+    popup_html = (
+        f"<b>🚨 {item.get('category', 'SOS')} (Sev {item.get('severity_score', '-')})</b><br>"
+        f"<b>Status:</b> {item.get('status')}<br>"
+        f"<b>Phone:</b> {item.get('reporter_contact', 'N/A')}<br>"
+        f"<b>Message:</b> {item.get('raw_message', '')}<br>"
+        f"<b>Team:</b> {item.get('team_name') or 'Queued'}<br>"
+        f"<b>Shelter:</b> {item.get('shelter_name') or 'N/A'}"
+    )
+
     folium.Marker(
-        [item["lat"], item["lon"]],
-        popup=f"🚨 SOS: {item['msg']}",
-        tooltip="Active Emergency Call",
+        [lat, lon],
+        popup=folium.Popup(popup_html, max_width=280),
+        tooltip=f"SOS: {item.get('category')} ({item.get('status')})",
         icon=folium.Icon(color="red", icon="flag")
     ).add_to(m)
 
-    # Route from ODRAF unit to SOS site
-    if item["team"]:
-        assigned_name = item["team"]["team_name"].lower()
-        unit = next((u for u in odraf_units if u["name"].lower().split()[0] in assigned_name or assigned_name in u["name"].lower()), None)
+    # Route from assigned ODRAF unit to SOS site
+    team_name = item.get("team_name")
+    if team_name:
+        unit = next((u for u in odraf_units if team_name.lower() in u["name"].lower() or u["name"].lower() in team_name.lower()), None)
         if unit:
-            dist_km = item["team"]["distance_km"]
             folium.PolyLine(
-                locations=[unit["loc"], [item["lat"], item["lon"]]],
+                locations=[unit["loc"], [lat, lon]],
                 color="blue",
-                weight=4,
-                opacity=0.85,
-                tooltip=f"ODRAF Route: {item['team']['team_name']} ({dist_km} km)"
-            ).add_to(m)
-
-            # Midpoint distance label badge
-            mid_lat = (unit["loc"][0] + item["lat"]) / 2
-            mid_lon = (unit["loc"][1] + item["lon"]) / 2
-            folium.Marker(
-                [mid_lat, mid_lon],
-                icon=folium.DivIcon(
-                    html=f"""<div style="font-size: 11px; font-weight: bold; background: white; padding: 2px 6px; border: 1px solid blue; border-radius: 4px; color: blue;">
-                                🚤 {dist_km} km
-                             </div>"""
-                )
-            ).add_to(m)
-
-    # Route from SOS site to Shelter
-    if item["shelter"]:
-        assigned_sh = item["shelter"]["name"].lower()
-        sh = next((s for s in shelters if s["name"].lower().split()[0] in assigned_sh or assigned_sh in s["name"].lower()), None)
-        if sh:
-            dist_km = item["shelter"]["distance_km"]
-            # 1. Dashed evacuation line
-            folium.PolyLine(
-                locations=[[item["lat"], item["lon"]], sh["loc"]],
-                color="green",
                 weight=3,
+                opacity=0.8,
+                tooltip=f"ODRAF Dispatch: {team_name}"
+            ).add_to(m)
+
+    # Dashed evacuation route from SOS site to nearest shelter
+    shelter_name = item.get("shelter_name")
+    if shelter_name:
+        sh = next((s for s in shelters if shelter_name.lower() in s["name"].lower() or s["name"].lower() in shelter_name.lower()), None)
+        if sh:
+            folium.PolyLine(
+                locations=[[lat, lon], sh["loc"]],
+                color="green",
+                weight=2,
                 dash_array="6, 8",
-                tooltip=f"Evacuation Route: {item['shelter']['name']} ({dist_km} km)"
+                tooltip=f"Evacuation Route: {shelter_name}"
             ).add_to(m)
 
-            # 2. Midpoint badge showing distance to shelter
-            mid_lat_sh = (sh["loc"][0] + item["lat"]) / 2
-            mid_lon_sh = (sh["loc"][1] + item["lon"]) / 2
-            folium.Marker(
-                [mid_lat_sh, mid_lon_sh],
-                icon=folium.DivIcon(
-                    html=f"""<div style="font-size: 11px; font-weight: bold; background: #E8F5E9; padding: 2px 6px; border: 1px solid #2E7D32; border-radius: 4px; color: #2E7D32;">
-                                🏠 {dist_km} km to Shelter
-                             </div>"""
-                )
-            ).add_to(m)
+st_folium(m, width=1200, height=540, key=f"cmd_map_{len(filtered_alerts)}")
 
-# Display Map
-st_folium(m, width=1100, height=580, key=f"map_{len(st.session_state.dispatches)}")
+# --- LIVE DISPATCH TABLE ---
+st.subheader("📋 Live Incoming SOS Dispatches")
+if filtered_alerts:
+    table_rows = [
+        {
+            "Status": a.get("status"),
+            "Severity": a.get("severity_score"),
+            "Category": a.get("category"),
+            "Reporter Phone": a.get("reporter_contact"),
+            "Message": a.get("raw_message"),
+            "Assigned Team": a.get("team_name") or "QUEUED",
+            "Nearest Shelter": a.get("shelter_name") or "N/A",
+            "Lat": round(a["latitude"], 4) if a.get("latitude") is not None else None,
+            "Lon": round(a["longitude"], 4) if a.get("longitude") is not None else None,
+        }
+        for a in filtered_alerts
+    ]
+    st.dataframe(table_rows, use_container_width=True, hide_index=True)
+else:
+    st.info("No active SOS alerts found. Submit an SOS from the Citizen App and click 'Refresh Live Citizen Alerts'.")
