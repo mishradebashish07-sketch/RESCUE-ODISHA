@@ -197,7 +197,15 @@ class TriageResponse(BaseModel):
 
 # --- FASTAPI APP ---
 app = FastAPI(title="Innovate Odisha - AI Disaster Response API (MySQL)")
+from fastapi.middleware.cors import CORSMiddleware
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Lock this down to your frontend domain before public launch
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.on_event("startup")
 def on_startup():
@@ -331,3 +339,26 @@ def reset_responders(db: Session = Depends(get_db)):
     db.execute(text("UPDATE responder_units SET is_available = TRUE;"))
     db.commit()
     return {"status": "success", "message": "All rescue units are now marked available."}
+@app.get("/api/v1/dispatches")
+def get_active_dispatches(db: Session = Depends(get_db)):
+    """Fetches the latest 50 SOS dispatches from MySQL for the Command Center."""
+    query = text("""
+        SELECT
+            d.id,
+            d.reporter_contact,
+            d.raw_message,
+            d.category,
+            d.severity_score,
+            d.status,
+            ST_X(d.location) AS longitude,
+            ST_Y(d.location) AS latitude,
+            r.team_name,
+            s.name AS shelter_name
+        FROM distress_reports d
+        LEFT JOIN responder_units r ON d.assigned_responder_id = r.id
+        LEFT JOIN shelters s ON d.nearest_shelter_id = s.id
+        ORDER BY d.created_at DESC
+        LIMIT 50;
+    """)
+    rows = db.execute(query).mappings().all()
+    return [dict(row) for row in rows]
